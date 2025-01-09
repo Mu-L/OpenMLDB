@@ -31,30 +31,35 @@ TEST_F(SqlCaseTest, ExtractTableDefTest) {
     {
         ::hybridse::type::ColumnDef* column = table.add_columns();
         column->set_type(::hybridse::type::kVarchar);
+        column->mutable_schema()->set_base_type(::hybridse::type::kVarchar);
         column->set_name("col0");
         column->set_is_not_null(false);
     }
     {
         ::hybridse::type::ColumnDef* column = table.add_columns();
         column->set_type(::hybridse::type::kInt32);
+        column->mutable_schema()->set_base_type(::hybridse::type::kInt32);
         column->set_name("col1");
         column->set_is_not_null(false);
     }
     {
         ::hybridse::type::ColumnDef* column = table.add_columns();
         column->set_type(::hybridse::type::kInt16);
+        column->mutable_schema()->set_base_type(::hybridse::type::kInt16);
         column->set_name("col2");
         column->set_is_not_null(false);
     }
     {
         ::hybridse::type::ColumnDef* column = table.add_columns();
         column->set_type(::hybridse::type::kFloat);
+        column->mutable_schema()->set_base_type(::hybridse::type::kFloat);
         column->set_name("col3");
         column->set_is_not_null(false);
     }
     {
         ::hybridse::type::ColumnDef* column = table.add_columns();
         column->set_type(::hybridse::type::kDouble);
+        column->mutable_schema()->set_base_type(::hybridse::type::kDouble);
         column->set_name("col4");
         column->set_is_not_null(false);
     }
@@ -62,6 +67,7 @@ TEST_F(SqlCaseTest, ExtractTableDefTest) {
     {
         ::hybridse::type::ColumnDef* column = table.add_columns();
         column->set_type(::hybridse::type::kInt64);
+        column->mutable_schema()->set_base_type(::hybridse::type::kInt64);
         column->set_name("col5");
         column->set_is_not_null(false);
     }
@@ -69,6 +75,7 @@ TEST_F(SqlCaseTest, ExtractTableDefTest) {
     {
         ::hybridse::type::ColumnDef* column = table.add_columns();
         column->set_type(::hybridse::type::kVarchar);
+        column->mutable_schema()->set_base_type(::hybridse::type::kVarchar);
         column->set_name("col6");
         column->set_is_not_null(false);
     }
@@ -142,18 +149,21 @@ TEST_F(SqlCaseTest, ExtractTableDefTest) {
     {
         ::hybridse::type::ColumnDef* column = table2.add_columns();
         column->set_type(::hybridse::type::kVarchar);
+        column->mutable_schema()->set_base_type(::hybridse::type::kVarchar);
         column->set_name("col0");
         column->set_is_not_null(false);
     }
     {
         ::hybridse::type::ColumnDef* column = table2.add_columns();
         column->set_type(::hybridse::type::kInt32);
+        column->mutable_schema()->set_base_type(::hybridse::type::kInt32);
         column->set_name("col1");
         column->set_is_not_null(false);
     }
     {
         ::hybridse::type::ColumnDef* column = table2.add_columns();
         column->set_type(::hybridse::type::kTimestamp);
+        column->mutable_schema()->set_base_type(::hybridse::type::kTimestamp);
         column->set_name("coltime");
         column->set_is_not_null(false);
     }
@@ -448,30 +458,35 @@ TEST_F(SqlCaseTest, ExtractSqlCase) {
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kVarchar);
+            column->mutable_schema()->set_base_type(::hybridse::type::kVarchar);
             column->set_name("col0");
             column->set_is_not_null(false);
         }
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kInt32);
+            column->mutable_schema()->set_base_type(::hybridse::type::kInt32);
             column->set_name("col1");
             column->set_is_not_null(false);
         }
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kInt16);
+            column->mutable_schema()->set_base_type(::hybridse::type::kInt16);
             column->set_name("col2");
             column->set_is_not_null(false);
         }
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kFloat);
+            column->mutable_schema()->set_base_type(::hybridse::type::kFloat);
             column->set_name("col3");
             column->set_is_not_null(false);
         }
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kDouble);
+            column->mutable_schema()->set_base_type(::hybridse::type::kDouble);
             column->set_name("col4");
             column->set_is_not_null(false);
         }
@@ -479,6 +494,7 @@ TEST_F(SqlCaseTest, ExtractSqlCase) {
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kInt64);
+            column->mutable_schema()->set_base_type(::hybridse::type::kInt64);
             column->set_name("col5");
             column->set_is_not_null(false);
         }
@@ -486,6 +502,7 @@ TEST_F(SqlCaseTest, ExtractSqlCase) {
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kVarchar);
+            column->mutable_schema()->set_base_type(::hybridse::type::kVarchar);
             column->set_name("col6");
             column->set_is_not_null(false);
         }
@@ -521,10 +538,10 @@ TEST_F(SqlCaseTest, ExtractSqlCase) {
     // Check Data
     {
         type::TableDef output_table;
+        ASSERT_TRUE(sql_case.ExtractInputTableDef(output_table));
         std::vector<hybridse::codec::Row> rows;
-        ASSERT_TRUE(sql_case.ExtractInputData(rows));
+        ASSERT_TRUE(sql_case.ExtractInputData(rows, 0, output_table.columns()));
         ASSERT_EQ(5u, rows.size());
-        sql_case.ExtractInputTableDef(output_table);
         hybridse::codec::RowView row_view(output_table.columns());
 
         {
@@ -613,36 +630,42 @@ TEST_F(SqlCaseTest, ExtractSqlCase) {
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kVarchar);
+            column->mutable_schema()->set_base_type(::hybridse::type::kVarchar);
             column->set_name("f0");
             column->set_is_not_null(false);
         }
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kFloat);
+            column->mutable_schema()->set_base_type(::hybridse::type::kFloat);
             column->set_name("f1");
             column->set_is_not_null(false);
         }
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kDouble);
+            column->mutable_schema()->set_base_type(::hybridse::type::kDouble);
             column->set_name("f2");
             column->set_is_not_null(false);
         }
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kInt16);
+            column->mutable_schema()->set_base_type(::hybridse::type::kInt16);
             column->set_name("f3");
             column->set_is_not_null(false);
         }
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kInt32);
+            column->mutable_schema()->set_base_type(::hybridse::type::kInt32);
             column->set_name("f4");
             column->set_is_not_null(false);
         }
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kInt64);
+            column->mutable_schema()->set_base_type(::hybridse::type::kInt64);
             column->set_name("f5");
             column->set_is_not_null(false);
         }
@@ -650,6 +673,7 @@ TEST_F(SqlCaseTest, ExtractSqlCase) {
         {
             ::hybridse::type::ColumnDef* column = table.add_columns();
             column->set_type(::hybridse::type::kTimestamp);
+            column->mutable_schema()->set_base_type(::hybridse::type::kTimestamp);
             column->set_name("f6");
             column->set_is_not_null(false);
         }
@@ -692,7 +716,7 @@ TEST_F(SqlCaseTest, ExtractSqlCase) {
 
 TEST_F(SqlCaseTest, ExtractYamlSqlCase) {
     std::string hybridse_dir = hybridse::sqlcase::FindSqlCaseBaseDirPath();
-    std::string case_path = "/cases/yaml/demo.yaml";
+    std::string case_path = "cases/yaml/demo.yaml";
     std::vector<SqlCase> cases;
 
     ASSERT_TRUE(hybridse::sqlcase::SqlCase::CreateSqlCasesFromYaml(
@@ -870,7 +894,7 @@ TEST_F(SqlCaseTest, ExtractYamlSqlCase) {
 
 TEST_F(SqlCaseTest, ExtractYamlSqlCase2) {
     std::string hybridse_dir = hybridse::sqlcase::FindSqlCaseBaseDirPath();
-    std::string case_path = "/cases/yaml/rtidb_demo.yaml";
+    std::string case_path = "cases/yaml/rtidb_demo.yaml";
     std::vector<SqlCase> cases;
 
     ASSERT_TRUE(hybridse::sqlcase::SqlCase::CreateSqlCasesFromYaml(
@@ -1032,7 +1056,7 @@ TEST_F(SqlCaseTest, ExtractYamlSqlCase2) {
 
 TEST_F(SqlCaseTest, ExtractYamlWithDebugSqlCase) {
     std::string hybridse_dir = hybridse::sqlcase::FindSqlCaseBaseDirPath();
-    std::string case_path = "/cases/yaml/rtidb_demo_debug.yaml";
+    std::string case_path = "cases/yaml/rtidb_demo_debug.yaml";
     std::vector<SqlCase> cases;
 
     ASSERT_TRUE(hybridse::sqlcase::SqlCase::CreateSqlCasesFromYaml(
@@ -1048,7 +1072,7 @@ TEST_F(SqlCaseTest, ExtractYamlWithDebugSqlCase) {
 }
 
 TEST_F(SqlCaseTest, InitCasesTest) {
-    std::string case_path = "/cases/yaml/demo.yaml";
+    std::string case_path = "cases/yaml/demo.yaml";
     {
         std::vector<SqlCase> cases = InitCases(case_path);
         ASSERT_EQ(5u, cases.size());
@@ -1061,7 +1085,7 @@ TEST_F(SqlCaseTest, InitCasesTest) {
 
 // dataProvider size = 1
 TEST_F(SqlCaseTest, DataProviderSize1Test) {
-    std::string case_path = "/cases/yaml/demo_data_provider_sz1.yaml";
+    std::string case_path = "cases/yaml/demo_data_provider_sz1.yaml";
     auto cases = InitCases(case_path);
     ASSERT_EQ(5u, cases.size());
     auto& case2 = cases.at(1);
@@ -1076,7 +1100,7 @@ TEST_F(SqlCaseTest, DataProviderSize1Test) {
 
 // dataProvider size > 1
 TEST_F(SqlCaseTest, DataProviderSize2Test) {
-    std::string case_path = "/cases/yaml/demo_data_provider_sz2.yaml";
+    std::string case_path = "cases/yaml/demo_data_provider_sz2.yaml";
     auto cases = InitCases(case_path);
     ASSERT_EQ(6u, cases.size());
 
@@ -1096,7 +1120,7 @@ TEST_F(SqlCaseTest, DataProviderSize2Test) {
 
 // dataProvider is two dimension sequence
 TEST_F(SqlCaseTest, DataProviderSize2SeqTest) {
-    std::string case_path = "/cases/yaml/demo_data_provider_sz2_sequence.yaml";
+    std::string case_path = "cases/yaml/demo_data_provider_sz2_sequence.yaml";
     auto cases = InitCases(case_path);
     ASSERT_EQ(6u, cases.size());
 
@@ -1115,7 +1139,7 @@ TEST_F(SqlCaseTest, DataProviderSize2SeqTest) {
 
 // dataProvider is 3 dimension map mixed of map and sequence
 TEST_F(SqlCaseTest, DataProviderSize3MixedTest) {
-    std::string case_path = "/cases/yaml/demo_data_provider_sz3_mixed.yaml";
+    std::string case_path = "cases/yaml/demo_data_provider_sz3_mixed.yaml";
     auto cases = InitCases(case_path);
     ASSERT_EQ(8u, cases.size());
 
@@ -1133,7 +1157,7 @@ TEST_F(SqlCaseTest, DataProviderSize3MixedTest) {
 }
 
 TEST_F(SqlCaseTest, ExpectProviderDefaultTest) {
-    std::string case_path = "/cases/yaml/demo_expect_provider_sz2_default.yaml";
+    std::string case_path = "cases/yaml/demo_expect_provider_sz2_default.yaml";
     auto cases = InitCases(case_path);
     ASSERT_EQ(6u, cases.size());
 
@@ -1149,7 +1173,7 @@ TEST_F(SqlCaseTest, ExpectProviderDefaultTest) {
 }
 
 TEST_F(SqlCaseTest, EmptyExpectProviderTest) {
-    std::string case_path = "/cases/yaml/demo_empty_expect_provider.yaml";
+    std::string case_path = "cases/yaml/demo_empty_expect_provider.yaml";
     auto cases = InitCases(case_path);
     ASSERT_EQ(10u, cases.size());
 
@@ -1168,7 +1192,7 @@ TEST_F(SqlCaseTest, BuildCreateSpSqlFromInputTest) {
         sql_case.sp_name_ = "sp";
         std::string sql = " select c1, c2, c3, c4 from t1   ";
         std::string sp_sql = "";
-        auto s = sql_case.BuildCreateSpSqlFromInput(0, sql, {});
+        auto s = sql_case.BuildCreateSpSql(sql, {}, 0);
         ASSERT_TRUE(s.ok()) << s.status();
         ASSERT_EQ(R"s(CREATE PROCEDURE sp (
 c1 string,
@@ -1190,7 +1214,7 @@ END;)s",
         sql_case.inputs_.push_back(input);
         std::string sql = "select c1, c2, c3, c4 from t1;";
         std::string sp_sql = "";
-        auto s = sql_case.BuildCreateSpSqlFromInput(0, sql, {0, 1, 3});
+        auto s = sql_case.BuildCreateSpSql(sql, {0, 1, 3}, 0);
         ASSERT_TRUE(s.ok()) << s.status();
         ASSERT_EQ(R"s(CREATE PROCEDURE sp1 (
 const c1 string,

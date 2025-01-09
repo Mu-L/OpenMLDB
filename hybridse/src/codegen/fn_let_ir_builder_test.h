@@ -108,8 +108,7 @@ void CheckFnLetBuilderWithParameterRow(::hybridse::node::NodeManager* manager, v
     if (pp_node_ptr->GetW() != nullptr) {
         frame_node = pp_node_ptr->GetW()->frame_node();
     }
-    status = vm::ExtractProjectInfos(pp_node_ptr->GetProjects(), frame_node,
-                                     schemas_ctx, manager, &column_projects);
+    status = vm::ExtractProjectInfos(pp_node_ptr->GetProjects(), frame_node, &column_projects);
     ASSERT_TRUE(status.isOK()) << status.str();
 
     bool is_agg = window_ptr != nullptr;
@@ -135,7 +134,6 @@ void CheckFnLetBuilderWithParameterRow(::hybridse::node::NodeManager* manager, v
     auto jit = std::unique_ptr<vm::HybridSeJitWrapper>(
         vm::HybridSeJitWrapper::Create());
     jit->Init();
-    vm::HybridSeJitWrapper::InitJitSymbols(jit.get());
 
     ASSERT_TRUE(jit->AddModule(std::move(m), std::move(ctx)));
     auto address = jit->FindFunction("test_at_fn");

@@ -19,7 +19,7 @@
 
 DECLARE_uint32(traverse_cnt_limit);
 DECLARE_uint32(max_traverse_cnt);
-DECLARE_uint32(max_traverse_pk_cnt);
+DECLARE_uint32(max_traverse_key_cnt);
 
 namespace openmldb {
 namespace catalog {
@@ -38,14 +38,17 @@ void FullTableIterator::SeekToFirst() {
 }
 
 bool FullTableIterator::Valid() const {
-    return (cnt_ <= FLAGS_max_traverse_cnt) && ((it_ && it_->Valid()) || (kv_it_ && kv_it_->Valid()));
+    if (FLAGS_max_traverse_cnt > 0 && cnt_ > FLAGS_max_traverse_cnt) {
+        return false;
+    }
+    return (it_ && it_->Valid()) || (kv_it_ && kv_it_->Valid());
 }
 
 void FullTableIterator::Next() {
     // reset the buffered value
     ResetValue();
     cnt_++;
-    if (cnt_ > FLAGS_max_traverse_cnt) {
+    if (FLAGS_max_traverse_cnt > 0 && cnt_ > FLAGS_max_traverse_cnt) {
         PDLOG(WARNING, "FullTableIterator exceed the max_traverse_cnt, tid %u, cnt %lld, max_traverse_cnt %u", tid_,
               cnt_, FLAGS_max_traverse_cnt);
         return;
@@ -152,12 +155,11 @@ bool FullTableIterator::NextFromRemote() {
             }
         } else {
             kv_it_ = iter->second->Traverse(tid_, cur_pid_, "", "", 0, FLAGS_traverse_cnt_limit, false, 0, count);
-            DLOG(INFO) << "count " << count;
+            DVLOG(1) << "count " << count;
         }
         if (kv_it_ && kv_it_->Valid()) {
             last_pk_ = kv_it_->GetLastPK();
             last_ts_ = kv_it_->GetLastTS();
-            response_vec_.emplace_back(kv_it_->GetResponse());
             key_ = kv_it_->GetKey();
             break;
         }
@@ -173,19 +175,19 @@ const ::hybridse::codec::Row& FullTableIterator::GetValue() {
     }
 
     valid_value_ = true;
+    base::Slice slice_row;
     if (it_ && it_->Valid()) {
-        value_ = ::hybridse::codec::Row(
-            ::hybridse::base::RefCountedSlice::Create(it_->GetValue().data(), it_->GetValue().size()));
-        return value_;
+        slice_row = it_->GetValue();
     } else {
-        auto slice_row = kv_it_->GetValue();
-        size_t sz = slice_row.size();
-        int8_t* copyed_row_data = new int8_t[sz];
-        memcpy(copyed_row_data, slice_row.data(), sz);
-        auto shared_slice = ::hybridse::base::RefCountedSlice::CreateManaged(copyed_row_data, sz);
-        value_.Reset(shared_slice);
-        return value_;
+        slice_row = kv_it_->GetValue();
     }
+    size_t sz = slice_row.size();
+    int8_t* copyed_row_data = reinterpret_cast<int8_t*>(malloc(sz));
+    memcpy(copyed_row_data, slice_row.data(), sz);
+    auto shared_slice = ::hybridse::base::RefCountedSlice::CreateManaged(copyed_row_data, sz);
+    buffered_slices_.push_back(shared_slice);
+    value_.Reset(shared_slice);
+    return value_;
 }
 
 DistributeWindowIterator::DistributeWindowIterator(uint32_t tid, uint32_t pid_num, std::shared_ptr<Tables> tables,
@@ -203,7 +205,7 @@ void DistributeWindowIterator::Reset() {
 }
 
 // seek to the pos where key = `key` on success
-// if the key is not exist, iterator will be invalid
+// if the key does not exist, iterator will be invalid
 void DistributeWindowIterator::Seek(const std::string& key) {
     Reset();
     DLOG(INFO) << "seek to key " << key;
@@ -215,7 +217,6 @@ void DistributeWindowIterator::Seek(const std::string& key) {
     if (stat.it != nullptr) {
         it_.reset(stat.it);
     } else if (stat.kv_it != nullptr) {
-        response_vec_.push_back(stat.kv_it->GetResponse());
         kv_it_ = stat.kv_it;
     } else {
         DLOG(INFO) << "no pos found for key " << key;
@@ -257,7 +258,6 @@ void DistributeWindowIterator::SeekToFirst() {
     }
     const auto& stat = SeekToFirstRemote();
     if (stat.kv_it) {
-        response_vec_.push_back(stat.kv_it->GetResponse());
         kv_it_ = stat.kv_it;
         cur_pid_ = stat.pid;
         return;
@@ -300,10 +300,10 @@ DistributeWindowIterator::ItStat DistributeWindowIterator::SeekByKey(const std::
 
 void DistributeWindowIterator::Next() {
     pk_cnt_++;
-    if (pk_cnt_ >= FLAGS_max_traverse_pk_cnt) {
+    if (FLAGS_max_traverse_key_cnt > 0 && pk_cnt_ >= FLAGS_max_traverse_key_cnt) {
         PDLOG(WARNING,
-              "DistributeWindowIterator exceeds the max_traverse_pk_cnt, tid %u, cnt %lld, max_traverse_pk_cnt %u",
-              tid_, pk_cnt_, FLAGS_max_traverse_pk_cnt);
+              "DistributeWindowIterator exceeds the max_traverse_key_cnt, tid %u, cnt %lld, max_traverse_key_cnt %u",
+              tid_, pk_cnt_, FLAGS_max_traverse_key_cnt);
         return;
     }
     if (it_ && it_->Valid()) {
@@ -347,7 +347,6 @@ void DistributeWindowIterator::Next() {
                 FLAGS_traverse_cnt_limit, true, ts_pos, count);
         DLOG(INFO) << "pid " << cur_pid_ << " last pk " << cur_pk << " key " << last_ts << " count " << count;
         if (kv_it_ && kv_it_->Valid()) {
-            response_vec_.emplace_back(kv_it_->GetResponse());
             return;
         }
         do {
@@ -361,7 +360,6 @@ void DistributeWindowIterator::Next() {
                 iter->second->Traverse(tid_, cur_pid_, index_name_, "", 0, FLAGS_traverse_cnt_limit, false, 0, count);
             DLOG(INFO) << "count " << count;
             if (kv_it_ && kv_it_->Valid()) {
-                response_vec_.emplace_back(kv_it_->GetResponse());
                 break;
             }
             kv_it_.reset();
@@ -369,7 +367,6 @@ void DistributeWindowIterator::Next() {
     } else {
         const auto& stat = SeekToFirstRemote();
         if (stat.kv_it) {
-            response_vec_.push_back(stat.kv_it->GetResponse());
             kv_it_ = stat.kv_it;
             cur_pid_ = stat.pid;
             return;
@@ -378,7 +375,10 @@ void DistributeWindowIterator::Next() {
 }
 
 bool DistributeWindowIterator::Valid() {
-    return (pk_cnt_ < FLAGS_max_traverse_pk_cnt) && ((it_ && it_->Valid()) || (kv_it_ && kv_it_->Valid()));
+    if (FLAGS_max_traverse_key_cnt > 0 && pk_cnt_ >= FLAGS_max_traverse_key_cnt) {
+        return false;
+    }
+    return (it_ && it_->Valid()) || (kv_it_ && kv_it_->Valid());
 }
 
 std::unique_ptr<::hybridse::codec::RowIterator> DistributeWindowIterator::GetValue() {
@@ -419,7 +419,7 @@ const ::hybridse::codec::Row& RemoteWindowIterator::GetValue() {
     size_t sz = slice_row.size();
     // for distributed environment, slice_row's data probably become invalid when the DistributeWindowIterator
     // iterator goes out of scope. so copy action occurred here
-    int8_t* copyed_row_data = new int8_t[sz];
+    int8_t* copyed_row_data = reinterpret_cast<int8_t*>(malloc(sz));
     memcpy(copyed_row_data, slice_row.data(), sz);
     auto shared_slice = ::hybridse::base::RefCountedSlice::CreateManaged(copyed_row_data, sz);
     row_.Reset(shared_slice);
@@ -436,7 +436,6 @@ RemoteWindowIterator::RemoteWindowIterator(uint32_t tid, uint32_t pid, const std
     if (kv_it_ && kv_it_->Valid()) {
         pk_ = kv_it_->GetPK();
         ts_ = kv_it_->GetKey();
-        response_vec_.emplace_back(kv_it_->GetResponse());
         auto traverse_it = std::dynamic_pointer_cast<openmldb::base::TraverseKvIterator>(kv_it);
         if (traverse_it) {
             is_traverse_data_ = true;
@@ -463,7 +462,6 @@ void RemoteWindowIterator::ScanRemote(uint64_t key, uint32_t ts_pos) {
         << tid_ << " pid " << pid_ << " ts_pos " << ts_pos;
     if (kv_it_ && kv_it_->Valid()) {
         ts_ = kv_it_->GetKey();
-        response_vec_.emplace_back(kv_it_->GetResponse());
     }
 }
 

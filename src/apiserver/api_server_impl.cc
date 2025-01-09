@@ -22,14 +22,46 @@
 #include <string>
 
 #include "apiserver/interface_provider.h"
+
+#include "absl/cleanup/cleanup.h"
 #include "brpc/server.h"
+#include "butil/time.h"
 
 namespace openmldb {
 namespace apiserver {
 
+std::string PrintJsonValue(const Value& v) {
+    if (v.IsNull()) {
+        return "null";
+    }
+    if (v.IsBool()) {
+        return v.GetBool() ? "true" : "false";
+    }
+    if (v.IsInt()) {
+        return std::to_string(v.GetInt());
+    }
+    if (v.IsInt64()) {
+        return std::to_string(v.GetInt64());
+    }
+    if (v.IsFloat()) {
+        return std::to_string(v.GetFloat());
+    }
+    if (v.IsDouble()) {
+        return std::to_string(v.GetDouble());
+    }
+    if (v.IsString()) {
+        return v.GetString();
+    }
+    return "unknown";
+}
+
+APIServerImpl::APIServerImpl(const std::string& endpoint)
+    : md_recorder_("rpc_server_" + endpoint.substr(endpoint.find(":") + 1), "http_method", {"method"}),
+      provider_("rpc_server_" + endpoint.substr(endpoint.find(":") + 1)) {}
+
 APIServerImpl::~APIServerImpl() = default;
 
-bool APIServerImpl::Init(const sdk::ClusterOptions& options) {
+bool APIServerImpl::Init(const std::shared_ptr<::openmldb::sdk::SQLRouterOptions>& options) {
     // If cluster sdk is needed, use ptr, don't own it. SQLClusterRouter owns it.
     auto cluster_sdk = new ::openmldb::sdk::ClusterSDK(options);
     bool ok = cluster_sdk->Init();
@@ -72,7 +104,6 @@ void APIServerImpl::Process(google::protobuf::RpcController* cntl_base, const Ht
                             google::protobuf::Closure* done) {
     brpc::ClosureGuard done_guard(done);
     auto* cntl = dynamic_cast<brpc::Controller*>(cntl_base);
-
     // The unresolved path has no slashes at the beginning(guaranteed by brpc), it's not good for url parsing
     auto unresolved_path = "/" + cntl->http_request().unresolved_path();
     auto method = cntl->http_request().method();
@@ -81,7 +112,6 @@ void APIServerImpl::Process(google::protobuf::RpcController* cntl_base, const Ht
 
     JsonWriter writer;
     provider_.handle(unresolved_path, method, req_body, writer);
-
     cntl->response_attachment().append(writer.GetString());
 }
 
@@ -89,7 +119,7 @@ struct ExecContext {
  public:
     bool is_online = false;
     bool is_sync = true;
-    int job_timeout = 600000;  // ms
+    int job_timeout = 600000;  // ms, equal with the default value in client vars
     ExecContext() = default;
     ExecContext(bool online, bool sync) : is_online(online), is_sync(sync) {}
 
@@ -101,11 +131,21 @@ struct ExecContext {
 };
 
 std::map<std::string, ExecContext> mode_map{
-    {"offsync", {false, true}}, {"offasync", {false, false}}, {"online", {true, false}}};
+    {"offsync", {false, true}},
+    {"offasync", {false, false}},
+    {"online", {true, false}},
+    {"onsync", {true, true}}  // special mode for online load data
+};
 
 void APIServerImpl::RegisterQuery() {
     provider_.post("/dbs/:db_name", [this](const InterfaceProvider::Params& param, const butil::IOBuf& req_body,
                                            JsonWriter& writer) {
+        auto start = absl::Now();
+        absl::Cleanup method_latency = [this, start]() {
+            // TODO(hw): query should split into async/sync, online/offline?
+            absl::Duration time = absl::Now() - start;
+            *md_recorder_.get_stats({"query"}) << absl::ToInt64Microseconds(time);
+        };
         auto resp = GeneralResp();
         auto db_it = param.find("db_name");
         if (db_it == param.end()) {
@@ -114,12 +154,10 @@ void APIServerImpl::RegisterQuery() {
         }
         auto db = db_it->second;
 
-        // default mode is offsync
-        QueryReq req;
         JsonReader query_reader(req_body.to_string().c_str());
-        query_reader >> req;
-        if (!query_reader) {
-            writer << resp.Set("Json parse failed, " + req_body.to_string());
+        QueryReq req(query_reader);
+        if (!req.status().ok()) {
+            writer << resp.Set("Json parse failed, " + req.status().ToString());
             return;
         }
         auto mode = boost::to_lower_copy(req.mode);
@@ -129,6 +167,9 @@ void APIServerImpl::RegisterQuery() {
             return;
         }
         ExecContext ctx = it->second;
+        if (req.timeout != -1) {
+            ctx.job_timeout = req.timeout;
+        }
 
         const auto& sql = req.sql;
         const auto parameter = req.parameter;
@@ -147,14 +188,16 @@ void APIServerImpl::RegisterQuery() {
         }
 
         QueryResp query_resp;
+        // we set write_nan_and_inf_null here instead of create a new JsonWriter with flags, cuz JsonWriter is not a
+        // good impl for template flag
+        query_resp.write_nan_and_inf_null = req.write_nan_and_inf_null;
         query_resp.rs = rs;
         writer << query_resp;
     });
 }
 
-bool APIServerImpl::Json2SQLRequestRow(const butil::rapidjson::Value& non_common_cols_v,
-                                       const butil::rapidjson::Value& common_cols_v,
-                                       std::shared_ptr<openmldb::sdk::SQLRequestRow> row) {
+absl::Status APIServerImpl::JsonArray2SQLRequestRow(const Value& non_common_cols_v, const Value& common_cols_v,
+                                                    std::shared_ptr<openmldb::sdk::SQLRequestRow> row) {
     auto sch = row->GetSchema();
 
     // scan all strings to init the total string length
@@ -180,23 +223,26 @@ bool APIServerImpl::Json2SQLRequestRow(const butil::rapidjson::Value& non_common
     for (decltype(sch->GetColumnCnt()) i = 0; i < sch->GetColumnCnt(); ++i) {
         if (sch->IsConstant(i)) {
             if (!AppendJsonValue(common_cols_v[common_idx], sch->GetColumnType(i), sch->IsColumnNotNull(i), row)) {
-                return false;
+                return absl::InvalidArgumentError(absl::StrCat("trans const failed on ", sch->GetColumnName(i), "(",
+                                                               sch->GetColumnType(i),
+                                                               "): ", PrintJsonValue(common_cols_v[common_idx])));
             }
             ++common_idx;
         } else {
             if (!AppendJsonValue(non_common_cols_v[non_common_idx], sch->GetColumnType(i), sch->IsColumnNotNull(i),
                                  row)) {
-                return false;
+                return absl::InvalidArgumentError(
+                    absl::StrCat("trans failed on ", sch->GetColumnName(i), "(", sch->GetColumnType(i),
+                                 "): ", PrintJsonValue(non_common_cols_v[non_common_idx])));
             }
             ++non_common_idx;
         }
     }
-    return true;
+    return absl::OkStatus();
 }
 
 template <typename T>
-bool APIServerImpl::AppendJsonValue(const butil::rapidjson::Value& v, hybridse::sdk::DataType type, bool is_not_null,
-                                    T row) {
+bool APIServerImpl::AppendJsonValue(const Value& v, hybridse::sdk::DataType type, bool is_not_null, T row) {
     // check if null
     if (v.IsNull()) {
         if (is_not_null) {
@@ -231,13 +277,14 @@ bool APIServerImpl::AppendJsonValue(const butil::rapidjson::Value& v, hybridse::
             return row->AppendInt64(v.GetInt64());
         }
         case hybridse::sdk::kTypeFloat: {
-            if (!v.IsDouble()) {
+            if (!v.IsNumber()) {  // relax check, int can get as double and support set float NaN&Inf
                 return false;
             }
-            return row->AppendFloat(boost::lexical_cast<float>(v.GetDouble()));
+            // IEEE 754 arithmetic allows cast nan/inf to float
+            return row->AppendFloat(v.GetFloat());
         }
         case hybridse::sdk::kTypeDouble: {
-            if (!v.IsDouble()) {
+            if (!v.IsLosslessDouble()) {
                 return false;
             }
             return row->AppendDouble(v.GetDouble());
@@ -257,10 +304,11 @@ bool APIServerImpl::AppendJsonValue(const butil::rapidjson::Value& v, hybridse::
             if (parts.size() != 3) {
                 return false;
             }
-            auto year = boost::lexical_cast<int32_t>(parts[0]);
-            auto mon = boost::lexical_cast<int32_t>(parts[1]);
-            auto day = boost::lexical_cast<int32_t>(parts[2]);
-            return row->AppendDate(year, mon, day);
+            int32_t year, mon, day;
+            if (FromString(parts[0], year) && FromString(parts[1], mon) && FromString(parts[2], day)) {
+                return row->AppendDate(year, mon, day);
+            }
+            return false;
         }
         case hybridse::sdk::kTypeTimestamp: {
             if (!v.IsInt64()) {
@@ -271,6 +319,56 @@ bool APIServerImpl::AppendJsonValue(const butil::rapidjson::Value& v, hybridse::
         default:
             return false;
     }
+}
+
+// common_cols_v is still an array, but non_common_cols_v is map, should find the value by the column name
+absl::Status APIServerImpl::JsonMap2SQLRequestRow(const Value& non_common_cols_v, const Value& common_cols_v,
+                                                  std::shared_ptr<openmldb::sdk::SQLRequestRow> row) {
+    auto sch = row->GetSchema();
+
+    // scan all strings to init the total string length
+    decltype(common_cols_v.Size()) str_len_sum = 0;
+    decltype(common_cols_v.Size()) common_idx = 0;
+    for (decltype(sch->GetColumnCnt()) i = 0; i < sch->GetColumnCnt(); ++i) {
+        // if element is null, GetStringLength() will get 0
+        if (sch->IsConstant(i)) {
+            if (sch->GetColumnType(i) == hybridse::sdk::kTypeString) {
+                str_len_sum += common_cols_v[common_idx].GetStringLength();
+            }
+            ++common_idx;
+        } else {
+            if (sch->GetColumnType(i) == hybridse::sdk::kTypeString) {
+                auto v = non_common_cols_v.FindMember(sch->GetColumnName(i).c_str());
+                if (v == non_common_cols_v.MemberEnd()) {
+                    return absl::InvalidArgumentError("can't find col " + sch->GetColumnName(i));
+                }
+                str_len_sum += v->value.GetStringLength();
+            }
+        }
+    }
+    row->Init(static_cast<int32_t>(str_len_sum));
+
+    common_idx = 0;
+    for (decltype(sch->GetColumnCnt()) i = 0; i < sch->GetColumnCnt(); ++i) {
+        if (sch->IsConstant(i)) {
+            if (!AppendJsonValue(common_cols_v[common_idx], sch->GetColumnType(i), sch->IsColumnNotNull(i), row)) {
+                return absl::InvalidArgumentError(absl::StrCat("trans const failed on ", sch->GetColumnName(i), "(",
+                                                               sch->GetColumnType(i),
+                                                               "): ", PrintJsonValue(common_cols_v[common_idx])));
+            }
+            ++common_idx;
+        } else {
+            auto v = non_common_cols_v.FindMember(sch->GetColumnName(i).c_str());
+            if (v == non_common_cols_v.MemberEnd()) {
+                return absl::InvalidArgumentError("can't find " + sch->GetColumnName(i));
+            }
+            if (!AppendJsonValue(v->value, sch->GetColumnType(i), sch->IsColumnNotNull(i), row)) {
+                return absl::InvalidArgumentError(absl::StrCat("trans failed on ", sch->GetColumnName(i), "(",
+                                                               sch->GetColumnType(i), "): ", PrintJsonValue(v->value)));
+            }
+        }
+    }
+    return absl::OkStatus();
 }
 
 void APIServerImpl::RegisterPut() {
@@ -288,7 +386,7 @@ void APIServerImpl::RegisterPut() {
 
         // json2doc, then generate an insert sql
         Document document;
-        if (document.Parse(req_body.to_string().c_str()).HasParseError()) {
+        if (document.Parse<rapidjson::kParseNanAndInfFlag>(req_body.to_string().c_str()).HasParseError()) {
             DLOG(INFO) << "rapidjson doc parse [" << req_body.to_string().c_str() << "] failed, code "
                        << document.GetParseError() << ", offset " << document.GetErrorOffset();
             writer << resp.Set("Json parse failed, error code: " + std::to_string(document.GetParseError()));
@@ -310,7 +408,7 @@ void APIServerImpl::RegisterPut() {
         std::string insert_placeholder = "insert into " + table + " values(" + holders + ");";
         auto row = sql_router_->GetInsertRow(db, insert_placeholder, &status);
         if (!row) {
-            writer << resp.Set(status.msg);
+            writer << resp.Set(status.code, status.msg);
             return;
         }
         auto schema = row->GetSchema();
@@ -320,11 +418,16 @@ void APIServerImpl::RegisterPut() {
             return;
         }
 
+        // TODO(hw): check all value json type with table schema?
         // scan all strings , calc the sum, to init SQLInsertRow's string length
         decltype(arr.Size()) str_len_sum = 0;
         for (int i = 0; i < cnt; ++i) {
-            // if null, GetStringLength() will get 0
-            if (schema->GetColumnType(i) == hybridse::sdk::kTypeString) {
+            // if null, it's not string json type and can't GetStringLength()
+            if (!arr[i].IsNull() && schema->GetColumnType(i) == hybridse::sdk::kTypeString) {
+                if (!arr[i].IsString()) {
+                    writer << resp.Set("value is not string for col " + schema->GetColumnName(i));
+                    return;
+                }
                 str_len_sum += arr[i].GetStringLength();
             }
         }
@@ -332,7 +435,8 @@ void APIServerImpl::RegisterPut() {
 
         for (int i = 0; i < cnt; ++i) {
             if (!AppendJsonValue(arr[i], schema->GetColumnType(i), schema->IsColumnNotNull(i), row)) {
-                writer << resp.Set("Translate to insert row failed");
+                writer << resp.Set(absl::StrCat("convertion failed on col ", schema->GetColumnName(i), "[",
+                                                schema->GetColumnType(i), "] with value ", arr[i].GetString()));
                 return;
             }
         }
@@ -356,23 +460,29 @@ void APIServerImpl::RegisterExecSP() {
 
 void APIServerImpl::ExecuteProcedure(bool has_common_col, const InterfaceProvider::Params& param,
                                      const butil::IOBuf& req_body, JsonWriter& writer) {
+    auto start = absl::Now();
+    absl::Cleanup method_latency = [this, start, has_common_col]() {
+        absl::Duration time = absl::Now() - start;
+        *md_recorder_.get_stats({has_common_col ? "sp" : "deployment"}) << absl::ToInt64Microseconds(time);
+    };
     auto resp = GeneralResp();
     auto db_it = param.find("db_name");
     auto sp_it = param.find("sp_name");
     if (db_it == param.end() || sp_it == param.end()) {
-        writer << resp.Set("Invalid path");
+        writer << resp.Set("Invalid db or sp name");
         return;
     }
     auto db = db_it->second;
     auto sp = sp_it->second;
 
+    // TODO(hw): JsonReader can't set SQLRequestRow simply(cuz common_cols), use raw rapidjson here
     Document document;
-    if (document.Parse(req_body.to_string().c_str()).HasParseError()) {
-        writer << resp.Set("Json parse failed");
+    if (document.Parse<rapidjson::kParseNanAndInfFlag>(req_body.to_string().c_str()).HasParseError()) {
+        writer << resp.Set("Request body json parse failed");
         return;
     }
 
-    butil::rapidjson::Value common_cols_v;
+    Value common_cols_v;
     if (has_common_col) {
         auto common_cols = document.FindMember("common_cols");
         if (common_cols != document.MemberEnd()) {
@@ -390,10 +500,16 @@ void APIServerImpl::ExecuteProcedure(bool has_common_col, const InterfaceProvide
 
     auto input = document.FindMember("input");
     if (input == document.MemberEnd() || !input->value.IsArray() || input->value.Empty()) {
-        writer << resp.Set("Invalid input");
+        writer << resp.Set("Field input is invalid");
         return;
     }
     const auto& rows = input->value;
+
+    auto write_nan_and_inf_null = false;
+    auto write_nan_and_inf_null_option = document.FindMember("write_nan_and_inf_null");
+    if (write_nan_and_inf_null_option != document.MemberEnd() && write_nan_and_inf_null_option->value.IsBool()) {
+        write_nan_and_inf_null = write_nan_and_inf_null_option->value.GetBool();
+    }
 
     hybridse::sdk::Status status;
     // We need to use ShowProcedure to get input schema(should know which column is constant).
@@ -427,15 +543,26 @@ void APIServerImpl::ExecuteProcedure(bool has_common_col, const InterfaceProvide
     auto row_batch = std::make_shared<sdk::SQLRequestRowBatch>(input_schema, common_column_indices);
     std::set<std::string> col_set;
     for (decltype(rows.Size()) i = 0; i < rows.Size(); ++i) {
-        if (!rows[i].IsArray() || rows[i].Size() != expected_input_size) {
-            writer << resp.Set("Invalid input data row");
-            return;
-        }
         auto row = std::make_shared<sdk::SQLRequestRow>(input_schema, col_set);
-
-        // sizes have been checked
-        if (!Json2SQLRequestRow(rows[i], common_cols_v, row)) {
-            writer << resp.Set("Translate to request row failed");
+        // row can be array or map
+        if (rows[i].IsArray()) {
+            if (rows[i].Size() != expected_input_size) {
+                writer << resp.Set("Invalid input data size in row " + std::to_string(i));
+                return;
+            }
+            if (auto st = JsonArray2SQLRequestRow(rows[i], common_cols_v, row); !st.ok()) {
+                writer << resp.Set("Translate to request row failed in array row " + std::to_string(i) + ", " +
+                                   st.ToString());
+                return;
+            }
+        } else if (rows[i].IsObject()) {
+            if (auto st = JsonMap2SQLRequestRow(rows[i], common_cols_v, row); !st.ok()) {
+                writer << resp.Set("Translate to request row failed in map row " + std::to_string(i) + ", " +
+                                   st.ToString());
+                return;
+            }
+        } else {
+            writer << resp.Set("Must be array or map, row " + std::to_string(i));
             return;
         }
         row->Build();
@@ -449,12 +576,16 @@ void APIServerImpl::ExecuteProcedure(bool has_common_col, const InterfaceProvide
     }
 
     ExecSPResp sp_resp;
+    sp_resp.write_nan_and_inf_null = write_nan_and_inf_null;
     // output schema in sp_info is needed for encoding data, so we need a bool in ExecSPResp to know whether to
     // print schema
     sp_resp.sp_info = sp_info;
     if (document.HasMember("need_schema") && document["need_schema"].IsBool() && document["need_schema"].GetBool()) {
         sp_resp.need_schema = true;
     }
+    // if met the json style request row, the response will be json style
+    // non-empty checked before
+    sp_resp.json_result = rows[0].IsObject();
     sp_resp.rs = rs;
     writer << sp_resp;
 }
@@ -633,19 +764,30 @@ std::string APIServerImpl::InnerTypeTransform(const std::string& s) {
     return out;
 }
 
-JsonReader& operator&(JsonReader& ar, QueryReq& s) {  // NOLINT
-    ar.StartObject();
+JsonReader& QueryReq::parse(JsonReader& ar) {  // NOLINT
+    RETURN_AR_IF_ERROR(ar.StartObject(), "req is not object");
     // mode is not optional
-    ar.Member("mode") & s.mode;
-    ar.Member("sql") & s.sql;
-    if (ar.HasMember("input")) {
-        ar.Member("input") & s.parameter;
+    RETURN_AR_IF_ERROR(ar.Member("mode") & mode, "mode parse failed");
+
+    RETURN_AR_IF_ERROR(ar.Member("sql") & sql, "sql parse failed");
+
+    if (ar.HasMember("timeout")) {
+        RETURN_AR_IF_ERROR(ar.Member("timeout") & timeout, "timeout parse failed");
     }
-    return ar.EndObject();
+
+    if (ar.HasMember("input")) {
+        RETURN_AR_IF_ERROR(parse(ar.Member("input"), parameter), "input parse failed");
+    }
+    if (ar.HasMember("write_nan_and_inf_null")) {
+        RETURN_AR_IF_ERROR(ar.Member("write_nan_and_inf_null") & write_nan_and_inf_null,
+                           "write_nan_and_inf_null parse failed");
+    }
+    RETURN_AR_IF_ERROR(ar.EndObject(), "req object end error");
+    return ar;
 }
 
-JsonReader& operator&(JsonReader& ar, std::shared_ptr<openmldb::sdk::SQLRequestRow>& parameter) {  // NOLINT
-    ar.StartObject();
+JsonReader& QueryReq::parse(JsonReader& ar, std::shared_ptr<openmldb::sdk::SQLRequestRow>& parameter) {  // NOLINT
+    RETURN_AR_IF_ERROR(ar.StartObject(), "input is not object");
 
     if (!ar.HasMember("schema") || !ar.HasMember("data")) return ar.EndObject();
 
@@ -680,10 +822,12 @@ JsonReader& operator&(JsonReader& ar, std::shared_ptr<openmldb::sdk::SQLRequestR
             } else if (type == "TIMESTAMP") {
                 col->set_type(::hybridse::type::kTimestamp);
             } else {
+                status_.Update(absl::InvalidArgumentError("invalid type " + type));
                 return ar;
             }
         }
-        ar.EndArray();  // end "schema"
+        // end "schema"
+        RETURN_AR_IF_ERROR(ar.EndArray(), "schema parse failed");
     }
 
     int32_t str_length = 0;
@@ -691,32 +835,33 @@ JsonReader& operator&(JsonReader& ar, std::shared_ptr<openmldb::sdk::SQLRequestR
         ar.Member("data");
         size_t size;
         ar.StartArray(&size);  // start first iter "data"
-        if (static_cast<int>(size) != schema.size()) return ar;
+        RETURN_AR_IF_NOT_OK(static_cast<int>(size) == schema.size(), ar,
+                            absl::StrCat("data size ", size, " != schema size ", schema.size()));
 
         for (auto col = schema.begin(); col != schema.end(); col++) {
             if (col->type() == ::hybridse::type::kVarchar) {
                 std::string str;
-                ar& str;
+                ar & str;
                 str_length += str.length();
             } else {
                 ar.Next();
             }
         }
-        ar.EndArray();  // end first iter "data"
+        // end first iter "data"
+        RETURN_AR_IF_ERROR(ar.EndArray(), "data array end error");
     }
     {
-        ::hybridse::sdk::SchemaImpl* schema_impl = new ::hybridse::sdk::SchemaImpl(schema);
-        parameter.reset(new openmldb::sdk::SQLRequestRow(std::shared_ptr<::hybridse::sdk::Schema>(schema_impl),
-                                                         std::set<std::string>({})));
-
+        parameter.reset(new openmldb::sdk::SQLRequestRow(
+            std::shared_ptr<::hybridse::sdk::Schema>(new ::hybridse::sdk::SchemaImpl(schema)), {}));
         ar.Member("data");
         size_t size;
         ar.StartArray(&size);  // start second iter "data"
-        if (!parameter->Init(str_length)) return ar;
+        RETURN_AR_IF_NOT_OK(parameter->Init(str_length), ar, "init parameter row failed");
 
-        for (auto col = schema.begin(); col != schema.end(); col++) {
+        for (size_t i = 0; i < size; i++) {
+            auto& col = schema.Get(i);
             bool ok;
-            switch (col->type()) {
+            switch (col.type()) {
                 case ::hybridse::type::kBool: {
                     bool b;
                     ar& b;
@@ -765,15 +910,18 @@ JsonReader& operator&(JsonReader& ar, std::shared_ptr<openmldb::sdk::SQLRequestR
                 default:
                     ok = false;
             }
-            if (!ok) return ar;
+            // get value from ar failed, debug string is only type, add the idx
+            RETURN_AR_IF_ERROR(ar, absl::StrCat("append failed on ", i, " type ", col.type()));
+            // append failed
+            RETURN_AR_IF_NOT_OK(ok, ar, absl::StrCat("append failed on ", i, " type ", col.type()));
         }
-
-        if (!parameter->Build()) return ar;
-
-        ar.EndArray();  // end second iter "data"
+        RETURN_AR_IF_NOT_OK(parameter->Build(), ar, "build parameter failed");
+        // end second iter "data"
+        RETURN_AR_IF_ERROR(ar.EndArray(), "data array end error");
     }
 
-    return ar.EndObject();
+    RETURN_AR_IF_ERROR(ar.EndObject(), "input object end error");
+    return ar;
 }
 
 void WriteSchema(JsonWriter& ar, const std::string& name, const hybridse::sdk::Schema& schema,  // NOLINT
@@ -798,7 +946,18 @@ void WriteSchema(JsonWriter& ar, const std::string& name, const hybridse::sdk::S
     ar.EndArray();
 }
 
-void WriteValue(JsonWriter& ar, std::shared_ptr<hybridse::sdk::ResultSet> rs, int i) {  // NOLINT
+void WriteDoubleHelper(JsonWriter& ar, double d, bool write_nan_and_inf_null) {  // NOLINT
+    if (write_nan_and_inf_null) {
+        if (std::isnan(d) || std::isinf(d)) {
+            ar.SetNull();
+            return;
+        }
+    }
+    ar& d;
+}
+
+void WriteValue(JsonWriter& ar, std::shared_ptr<hybridse::sdk::ResultSet> rs, int i,  // NOLINT
+                bool write_nan_and_inf_null) {
     auto schema = rs->GetSchema();
     if (rs->IsNULL(i)) {
         if (schema->IsColumnNotNull(i)) {
@@ -829,13 +988,13 @@ void WriteValue(JsonWriter& ar, std::shared_ptr<hybridse::sdk::ResultSet> rs, in
         case hybridse::sdk::kTypeFloat: {
             float value = 0;
             rs->GetFloat(i, &value);
-            ar& static_cast<double>(value);
+            WriteDoubleHelper(ar, value, write_nan_and_inf_null);
             break;
         }
         case hybridse::sdk::kTypeDouble: {
             double value = 0;
             rs->GetDouble(i, &value);
-            ar& value;
+            WriteDoubleHelper(ar, value, write_nan_and_inf_null);
             break;
         }
         case hybridse::sdk::kTypeString: {
@@ -863,12 +1022,12 @@ void WriteValue(JsonWriter& ar, std::shared_ptr<hybridse::sdk::ResultSet> rs, in
         case hybridse::sdk::kTypeBool: {
             bool value = false;
             rs->GetBool(i, &value);
-            ar&(value ? "true" : "false");
+            ar& value;
             break;
         }
         default: {
             LOG(ERROR) << "Invalid Column Type";
-            ar & "NA";
+            ar& std::string("NA");
             break;
         }
     }
@@ -895,13 +1054,25 @@ JsonWriter& operator&(JsonWriter& ar, ExecSPResp& s) {  // NOLINT
     auto& rs = s.rs;
     rs->Reset();
     while (rs->Next()) {
-        ar.StartArray();
-        for (decltype(schema.GetColumnCnt()) i = 0; i < schema.GetColumnCnt(); i++) {
-            if (!schema.IsConstant(i)) {
-                WriteValue(ar, rs, i);
+        // write array or json map
+        if (s.json_result) {
+            ar.StartObject();
+            for (decltype(schema.GetColumnCnt()) i = 0; i < schema.GetColumnCnt(); i++) {
+                if (!schema.IsConstant(i)) {
+                    ar.Member(schema.GetColumnName(i).c_str());
+                    WriteValue(ar, rs, i, s.write_nan_and_inf_null);
+                }
             }
+            ar.EndObject();
+        } else {
+            ar.StartArray();
+            for (decltype(schema.GetColumnCnt()) i = 0; i < schema.GetColumnCnt(); i++) {
+                if (!schema.IsConstant(i)) {
+                    WriteValue(ar, rs, i, s.write_nan_and_inf_null);
+                }
+            }
+            ar.EndArray();  // one row end
         }
-        ar.EndArray();  // one row end
     }
     ar.EndArray();
 
@@ -913,7 +1084,7 @@ JsonWriter& operator&(JsonWriter& ar, ExecSPResp& s) {  // NOLINT
             ar.StartArray();
             for (decltype(schema.GetColumnCnt()) i = 0; i < schema.GetColumnCnt(); i++) {
                 if (schema.IsConstant(i)) {
-                    WriteValue(ar, rs, i);
+                    WriteValue(ar, rs, i, s.write_nan_and_inf_null);
                 }
             }
             ar.EndArray();  // one row end
@@ -1091,9 +1262,6 @@ JsonWriter& operator&(JsonWriter& ar, std::shared_ptr<::openmldb::nameserver::Ta
 
     ar.Member("added_column_desc") & info->added_column_desc();
 
-    if (info->has_format_version()) {
-        ar.Member("format_version") & info->format_version();
-    }
     if (info->has_db()) {
         ar.Member("db") & info->db();
     }
@@ -1167,7 +1335,7 @@ JsonWriter& operator&(JsonWriter& ar, QueryResp& s) {  // NOLINT
         while (rs->Next()) {
             ar.StartArray();
             for (decltype(schema.GetColumnCnt()) i = 0; i < schema.GetColumnCnt(); i++) {
-                WriteValue(ar, rs, i);
+                WriteValue(ar, rs, i, s.write_nan_and_inf_null);
             }
             ar.EndArray();
         }

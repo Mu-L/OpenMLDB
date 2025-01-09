@@ -28,7 +28,11 @@ jobs:
     container:
       image: ghcr.io/4paradigm/hybridsql:latest
     env:
+      ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node16
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
       TESTING_ENABLE_STRIP: ON
+      # ref https://github.blog/changelog/2024-03-07-github-actions-all-actions-will-run-on-node20-instead-of-node16-by-default/
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
     steps:
       - uses: actions/checkout@v2
 
@@ -42,7 +46,7 @@ jobs:
 
       - name: Upload Cpp UT Results
         if: always()
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: linux-ut-result-cpp-${{ github.sha }}
           path: |
@@ -54,15 +58,17 @@ jobs:
     env:
       NPROC: 3
       CTEST_PARALLEL_LEVEL: 3 # parallel test level for ctest (make test)
+      # this option enables print inner output rows of each node in runner
+      HYBRIDSE_DEBUG: true
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           brew install coreutils
 
       - name: Cache thirdparty
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: |
             .deps/
@@ -77,9 +83,16 @@ jobs:
         run: |
           make hybridse-test
 
+      - name: Upload Event File
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: event-file
+          path: ${{ github.event_path }}
+
       - name: Upload Cpp UT Results
         if: always()
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: macos-ut-result-cpp-${{ github.sha }}
           path: |
@@ -87,7 +100,7 @@ jobs:
 
   publish-test-results-linux:
     needs: ["linux-build"]
-    # the action will only run on 4paradigm/HybridSE's context, not for fork repo or dependabot
+    # the action will only run on 4paradigm/OpenMLDB's context, not for fork repo or dependabot
     if: >
       always() && github.event_name == 'push' || (
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -102,7 +115,7 @@ jobs:
 
   publish-test-results-mac:
     needs: ["macos-build"]
-    # the action will only run on 4paradigm/HybridSE's context, not for fork repo or dependabot
+    # the action will only run on 4paradigm/OpenMLDB's context, not for fork repo or dependabot
     if: >
       always() && github.event_name == 'push' || (
       github.event.pull_request.head.repo.full_name == github.repository &&

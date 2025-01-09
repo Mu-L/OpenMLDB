@@ -7,12 +7,14 @@ on:
   workflow_dispatch:
     inputs:
       EXEC_TEST_TYPE:
-        description: 'Which tests need to be executed? The options are all, python, java, batch, cli, standalone-cli and apiserver'
+        description: 'Which tests need to be executed? The options are all, python, java, batch, cli, standalone-cli, apiserver, yarn'
         required: true
         default: 'all'
 env:
   GIT_SUBMODULE_STRATEGY: recursive
   HYBRIDSE_SOURCE: local
+  # ref https://github.blog/changelog/2024-03-07-github-actions-all-actions-will-run-on-node20-instead-of-node16-by-default/
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
 jobs:
 #  java-sdk-test-standalone-0:
@@ -69,6 +71,8 @@ jobs:
     container:
       image: ghcr.io/4paradigm/hybridsql:latest
     env:
+      ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node16
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
       OS: linux
     steps:
       - uses: actions/checkout@v2
@@ -90,7 +94,7 @@ jobs:
           comment_title: "SRC java-sdk-cluster-memory-0 Report"
       - name: tar test report
         if: ${{ failure() }}
-        run: tar -zcvf allure-results.tar.gz test/integration-test/openmldb-test-java/openmldb-sdk-test/target/allure-results
+        run: tar -zcvf surefire-reports.tar.gz test/integration-test/openmldb-test-java/openmldb-sdk-test/target/surefire-reports
       - name: Send Email
         if: ${{ failure() }}
         uses: dawidd6/action-send-mail@master
@@ -101,10 +105,10 @@ jobs:
           password: ${{ secrets.MAIL_PASSWORD }}
           subject: OpenMLDB Memory Test
           body: OpenMLDB Memory Test Failed
+          html_body: test/integration-test/openmldb-test-java/openmldb-sdk-test/target/surefire-reports/html/overview.html
           to: ${{ secrets.MAIL_TO }}
           from: GitHub Actions
-          content_type: text/plain
-          attachments: allure-results.tar.gz
+          attachments: surefire-reports.tar.gz
 
   java-sdk-cluster-memory-task:
     if: ${{ github.event.inputs.EXEC_TEST_TYPE == 'all' || github.event.inputs.EXEC_TEST_TYPE == 'java' }}
@@ -112,6 +116,8 @@ jobs:
     container:
       image: ghcr.io/4paradigm/hybridsql:latest
     env:
+      ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node16
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
       OS: linux
     steps:
       - uses: actions/checkout@v2
@@ -133,7 +139,7 @@ jobs:
           comment_title: "SRC java-sdk-cluster-memory-task Report"
       - name: tar test report
         if: ${{ failure() }}
-        run: tar -zcvf allure-results.tar.gz test/integration-test/openmldb-test-java/openmldb-sdk-test/target/allure-results
+        run: tar -zcvf surefire-reports.tar.gz test/integration-test/openmldb-test-java/openmldb-sdk-test/target/surefire-reports
       - name: Send Email
         if: ${{ failure() }}
         uses: dawidd6/action-send-mail@master
@@ -144,10 +150,10 @@ jobs:
           password: ${{ secrets.MAIL_PASSWORD }}
           subject: OpenMLDB Memory Task Test
           body: OpenMLDB Memory Task Test Failed
+          html_body: file://test/integration-test/openmldb-test-java/openmldb-sdk-test/target/surefire-reports/html/overview.html
           to: ${{ secrets.MAIL_TO }}
           from: GitHub Actions
-          content_type: text/plain
-          attachments: allure-results.tar.gz
+          attachments: surefire-reports.tar.gz
 
   java-sdk-cluster-memory-1:
     if: ${{ github.event.inputs.EXEC_TEST_TYPE == 'all' || github.event.inputs.EXEC_TEST_TYPE == 'java' }}
@@ -155,6 +161,8 @@ jobs:
     container:
       image: ghcr.io/4paradigm/hybridsql:latest
     env:
+      ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node16
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
       OS: linux
     steps:
       - uses: actions/checkout@v2
@@ -176,7 +184,7 @@ jobs:
           comment_title: SRC java-sdk-cluster-memory-1 Report
       - name: tar test report
         if: ${{ failure() }}
-        run: tar -zcvf allure-results.tar.gz test/integration-test/openmldb-test-java/openmldb-sdk-test/target/allure-results
+        run: tar -zcvf surefire-reports.tar.gz test/integration-test/openmldb-test-java/openmldb-sdk-test/target/surefire-reports
       - name: Send Email
         if: ${{ failure() }}
         uses: dawidd6/action-send-mail@master
@@ -189,8 +197,7 @@ jobs:
           body: OpenMLDB Memory 1 Test Failed
           to: ${{ secrets.MAIL_TO }}
           from: GitHub Actions
-          content_type: text/plain
-          attachments: allure-results.tar.gz
+          attachments: surefire-reports.tar.gz
 
   java-sdk-cluster-ssd-0:
     if: ${{ github.event.inputs.EXEC_TEST_TYPE == 'all' || github.event.inputs.EXEC_TEST_TYPE == 'java' }}
@@ -198,6 +205,8 @@ jobs:
     container:
       image: ghcr.io/4paradigm/hybridsql:latest
     env:
+      ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node16
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
       OS: linux
     steps:
       - uses: actions/checkout@v2
@@ -219,7 +228,7 @@ jobs:
           comment_title: "SRC java-sdk-cluster-ssd-0 Report"
       - name: tar test report
         if: ${{ failure() }}
-        run: tar -zcvf allure-results.tar.gz test/integration-test/openmldb-test-java/openmldb-sdk-test/target/allure-results
+        run: tar -zcvf surefire-reports.tar.gz test/integration-test/openmldb-test-java/openmldb-sdk-test/target/surefire-reports
       - name: Send Email
         if: ${{ failure() }}
         uses: dawidd6/action-send-mail@master
@@ -232,8 +241,7 @@ jobs:
           body: OpenMLDB SSD Test Failed
           to: ${{ secrets.MAIL_TO }}
           from: GitHub Actions
-          content_type: text/plain
-          attachments: allure-results.tar.gz
+          attachments: surefire-reports.tar.gz
 
 #  java-sdk-cluster-ssd-task:
 #    if: ${{ github.event.inputs.EXEC_TEST_TYPE == 'all' || github.event.inputs.EXEC_TEST_TYPE == 'java' }}
@@ -284,6 +292,8 @@ jobs:
     container:
       image: ghcr.io/4paradigm/hybridsql:latest
     env:
+      ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node16
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
       OS: linux
     steps:
       - uses: actions/checkout@v2
@@ -305,7 +315,7 @@ jobs:
           comment_title: "SRC java-sdk-cluster-hdd-0 Report"
       - name: tar test report
         if: ${{ failure() }}
-        run: tar -zcvf allure-results.tar.gz test/integration-test/openmldb-test-java/openmldb-sdk-test/target/allure-results
+        run: tar -zcvf surefire-reports.tar.gz test/integration-test/openmldb-test-java/openmldb-sdk-test/target/surefire-reports
       - name: Send Email
         if: ${{ failure() }}
         uses: dawidd6/action-send-mail@master
@@ -318,8 +328,7 @@ jobs:
           body: OpenMLDB HDD Test Failed
           to: ${{ secrets.MAIL_TO }}
           from: GitHub Actions
-          content_type: text/plain
-          attachments: allure-results.tar.gz
+          attachments: surefire-reports.tar.gz
 
 #  java-sdk-cluster-hdd-task:
 #    if: ${{ github.event.inputs.EXEC_TEST_TYPE == 'all' || github.event.inputs.EXEC_TEST_TYPE == 'java' }}
@@ -430,7 +439,7 @@ jobs:
 #        run: source /root/.bashrc && bash test/steps/openmldb-sdk-test-python.sh -b SRC -d standalone -l "0"
 #      - name: upload test results
 #        if: always()
-#        uses: actions/upload-artifact@v2
+#        uses: actions/upload-artifact@v3
 #        with:
 #          name: python-sdk-standalone-0-src-${{ github.sha }}
 #          path: |
@@ -471,7 +480,7 @@ jobs:
 #        run: source /root/.bashrc && bash test/steps/openmldb-sdk-test-python.sh -b SRC -d standalone -l "1,2,3,4,5"
 #      - name: upload test results
 #        if: always()
-#        uses: actions/upload-artifact@v2
+#        uses: actions/upload-artifact@v3
 #        with:
 #          name: python-sdk-standalone-1-src-${{ github.sha }}
 #          path: |
@@ -524,3 +533,48 @@ jobs:
 #          files: test/batch-test/openmldb-batch-test/target/surefire-reports/TEST-*.xml
 #          check_name: Batch Test SRC Report
 #          comment_title: Batch Test SRC Report
+
+  java-sdk-yarn:
+    if: ${{ github.event.inputs.EXEC_TEST_TYPE == 'all' || github.event.inputs.EXEC_TEST_TYPE == 'yarn' }}
+    runs-on: self-hosted
+    container:
+      image: ghcr.io/4paradigm/hybridsql:latest
+    env:
+      ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node16
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+      OS: linux
+    steps:
+      - uses: actions/checkout@v2
+      - name: build jsdk and package
+        run: |
+          make configure CMAKE_INSTALL_PREFIX=openmldb-linux
+          make SQL_JAVASDK_ENABLE=ON && make SQL_JAVASDK_ENABLE=ON install
+          tar -zcvf openmldb-linux.tar.gz openmldb-linux
+          echo "openmldb-pkg:"
+          ls -al
+      - name: test
+        run: source /root/.bashrc && bash test/steps/openmldb-sdk-test-java-src.sh -c test_yarn.xml -d yarn -l "0" -s "memory"
+      - name: TEST Results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v1
+        with:
+          files: test/integration-test/openmldb-test-java/openmldb-sdk-test/target/surefire-reports/TEST-*.xml
+          check_name: "SRC java-sdk-cluster-memory-0 Report"
+          comment_title: "SRC java-sdk-cluster-memory-0 Report"
+      - name: tar test report
+        if: ${{ failure() }}
+        run: tar -zcvf surefire-reports.tar.gz test/integration-test/openmldb-test-java/openmldb-sdk-test/target/surefire-reports
+      - name: Send Email
+        if: ${{ failure() }}
+        uses: dawidd6/action-send-mail@master
+        with:
+          server_address: smtp.partner.outlook.cn
+          server_port: 587
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: OpenMLDB Memory Test
+          body: OpenMLDB Memory Test Failed
+          html_body: test/integration-test/openmldb-test-java/openmldb-sdk-test/target/surefire-reports/html/overview.html
+          to: ${{ secrets.MAIL_TO }}
+          from: GitHub Actions
+          attachments: surefire-reports.tar.gz

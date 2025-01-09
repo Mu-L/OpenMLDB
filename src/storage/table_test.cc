@@ -75,7 +75,7 @@ Table* CreateTable(const ::openmldb::api::TableMeta& table_meta, const std::stri
 }
 
 inline std::string GetDBPath(const std::string& root_path, uint32_t tid, uint32_t pid) {
-    return root_path + "/" + std::to_string(tid) + "_" + std::to_string(pid);
+    return absl::StrCat(root_path, "/", tid, "_", pid);
 }
 
 using ::openmldb::codec::SchemaCodec;
@@ -83,7 +83,7 @@ using ::openmldb::codec::SchemaCodec;
 class DiskTestEnvironment : public ::testing::Environment{
     virtual void TearDown() {
         for (int i = 1; i <= counter; i++) {
-            std::string path = FLAGS_hdd_root_path + "/" + std::to_string(i) +  "_1";
+            std::string path = absl::StrCat(FLAGS_hdd_root_path , "/", i, "_1");
             RemoveData(path);
         }
     }
@@ -198,7 +198,7 @@ TEST_P(TableTest, MultiDimissionPut0) {
     ::openmldb::codec::SDKCodec sdk_codec(meta);
     std::string result;
     sdk_codec.EncodeRow({"d0", "d1", "d2"}, &result);
-    bool ok = table->Put(1, result, dimensions);
+    bool ok = table->Put(1, result, dimensions).ok();
     ASSERT_TRUE(ok);
     // some functions in disk table need to be implemented.
     // refer to issue #1238
@@ -331,16 +331,15 @@ TEST_P(TableTest, SchedGcHead) {
     if (storageMode == openmldb::common::kHDD) {
         return;
     }
-    std::map<std::string, uint32_t> mapping;
-    mapping.insert(std::make_pair("idx0", 0));
+    std::map<std::string, uint32_t> mapping = { {"idx0", 0} };
     std::string table_path = "";
     int id = 1;
     if (storageMode == ::openmldb::common::kHDD) {
         id = ++counter;
         table_path = GetDBPath(FLAGS_hdd_root_path, id, 1);
     }
-    Table* table = CreateTable("tx_log", id, 1, 8, mapping, 1, ::openmldb::type::kLatestTime,
-        table_path, storageMode);
+    std::unique_ptr<Table> table(CreateTable("tx_log", id, 1, 8, mapping, 1, ::openmldb::type::kLatestTime,
+        table_path, storageMode));
     table->Init();
     std::string value = ::openmldb::test::EncodeKV("test", "test1");
     table->Put("test", 2, value.data(), value.size());
@@ -380,11 +379,9 @@ TEST_P(TableTest, SchedGcHead) {
             ASSERT_FALSE(table->IsExpire(entry));
         }
     }
-    ASSERT_EQ(1, (int64_t)table->GetRecordCnt());
     ASSERT_EQ(1, (int64_t)table->GetRecordIdxCnt());
     ASSERT_EQ(bytes, table->GetRecordByteSize());
     ASSERT_EQ(record_idx_bytes, table->GetRecordIdxByteSize());
-    delete table;
 }
 
 TEST_P(TableTest, SchedGcHead1) {
@@ -441,16 +438,15 @@ TEST_P(TableTest, SchedGc) {
     if (storageMode == openmldb::common::kHDD) {
         return;
     }
-    std::map<std::string, uint32_t> mapping;
-    mapping.insert(std::make_pair("idx0", 0));
-    std::string table_path = "";
+    std::map<std::string, uint32_t> mapping = { {"idx0", 0} };
+    std::string table_path;
     int id = 1;
     if (storageMode == ::openmldb::common::kHDD) {
         id = ++counter;
         table_path = GetDBPath(FLAGS_hdd_root_path, id, 1);
     }
-    Table* table = CreateTable("tx_log", id, 1, 8, mapping, 1, ::openmldb::type::kLatestTime,
-        table_path, storageMode);
+    std::unique_ptr<Table> table(CreateTable("tx_log", id, 1, 8, mapping, 1, ::openmldb::type::kLatestTime,
+        table_path, storageMode));
     table->Init();
 
     uint64_t now = ::baidu::common::timer::get_micros() / 1000;
@@ -466,7 +462,6 @@ TEST_P(TableTest, SchedGc) {
         ASSERT_EQ(1, (int64_t)table->GetRecordPkCnt());
     }
     table->SchedGc();
-    ASSERT_EQ(1, (int64_t)table->GetRecordCnt());
     if (storageMode == ::openmldb::common::StorageMode::kMemory) {
         ASSERT_EQ(1, (int64_t)table->GetRecordIdxCnt());
     }
@@ -474,14 +469,13 @@ TEST_P(TableTest, SchedGc) {
     ASSERT_EQ(record_idx_bytes, table->GetRecordIdxByteSize());
 
     Ticket ticket;
-    TableIterator* it = table->NewIterator("test", ticket);
+    std::unique_ptr<TableIterator> it(table->NewIterator("test", ticket));
     it->Seek(now);
     ASSERT_TRUE(it->Valid());
     std::string value_str(it->GetValue().data(), it->GetValue().size());
     ASSERT_EQ("tes2", value_str);
     it->Next();
     ASSERT_FALSE(it->Valid());
-    delete table;
 }
 
 TEST_P(TableTest, TableDataCnt) {
@@ -655,16 +649,15 @@ TEST_P(TableTest, TableIteratorRun) {
 
 TEST_P(TableTest, TableIteratorNoPk) {
     ::openmldb::common::StorageMode storageMode = GetParam();
-    std::map<std::string, uint32_t> mapping;
-    mapping.insert(std::make_pair("idx0", 0));
-    std::string table_path = "";
+    std::map<std::string, uint32_t> mapping = { {"idx0", 0} };
+    std::string table_path;
     int id = 1;
     if (storageMode == ::openmldb::common::kHDD) {
         id = ++counter;
         table_path = GetDBPath(FLAGS_hdd_root_path, id, 1);
     }
-    Table* table = CreateTable("tx_log", id, 1, 1, mapping, 0, ::openmldb::type::kAbsoluteTime,
-        table_path, storageMode);
+    std::unique_ptr<Table> table(CreateTable("tx_log", id, 1, 1, mapping, 0, ::openmldb::type::kAbsoluteTime,
+        table_path, storageMode));
     table->Init();
 
     table->Put("pk10", 9527, "test10", 5);
@@ -674,7 +667,7 @@ TEST_P(TableTest, TableIteratorNoPk) {
     table->Put("pk2", 9523, "test2", 5);
     table->Put("pk0", 9522, "test0", 5);
     // Ticket ticket;
-    TableIterator* it = table->NewTraverseIterator(0);
+    std::unique_ptr<TableIterator> it(table->NewTraverseIterator(0));
     it->SeekToFirst();
 
     ASSERT_STREQ("pk0", it->GetPK().c_str());
@@ -689,16 +682,17 @@ TEST_P(TableTest, TableIteratorNoPk) {
     ASSERT_STREQ("pk4", it->GetPK().c_str());
     ASSERT_EQ(9524, (int64_t)it->GetKey());
 
-    delete it;
-
-    it = table->NewTraverseIterator(0);
+    it.reset(table->NewTraverseIterator(0));
     it->Seek("pk4", 9526);
     ASSERT_STREQ("pk4", it->GetPK().c_str());
     ASSERT_EQ(9524, (int64_t)it->GetKey());
-    delete it;
 
-    ASSERT_TRUE(table->Delete("pk4", 0));
-    it = table->NewTraverseIterator(0);
+    api::LogEntry entry;
+    auto dimension = entry.add_dimensions();
+    dimension->set_key("pk4");
+    dimension->set_idx(0);
+    ASSERT_TRUE(table->Delete(entry));
+    it.reset(table->NewTraverseIterator(0));
     it->Seek("pk4", 9526);
     ASSERT_TRUE(it->Valid());
 
@@ -707,9 +701,6 @@ TEST_P(TableTest, TableIteratorNoPk) {
     it->Next();
     ASSERT_STREQ("pk8", it->GetPK().c_str());
     ASSERT_EQ(9526, (int64_t)it->GetKey());
-
-    delete it;
-    delete table;
 }
 
 TEST_P(TableTest, TableIteratorCount) {
@@ -790,7 +781,6 @@ TEST_P(TableTest, TableIteratorTS) {
     table_meta.set_mode(::openmldb::api::TableMode::kTableLeader);
     table_meta.set_key_entry_max_height(8);
     table_meta.set_storage_mode(storageMode);
-    table_meta.set_format_version(1);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "card", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "mcc", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "price", ::openmldb::type::kBigInt);
@@ -818,7 +808,7 @@ TEST_P(TableTest, TableIteratorTS) {
         dim->set_key(row[1]);
         std::string value;
         ASSERT_EQ(0, codec.EncodeRow(row, &value));
-        table->Put(0, value, request.dimensions());
+        ASSERT_TRUE(table->Put(0, value, request.dimensions()).ok());
     }
     TableIterator* it = table->NewTraverseIterator(0);
     it->SeekToFirst();
@@ -901,7 +891,6 @@ TEST_P(TableTest, TraverseIteratorCount) {
     table_meta.set_seg_cnt(8);
     table_meta.set_mode(::openmldb::api::TableMode::kTableLeader);
     table_meta.set_key_entry_max_height(8);
-    table_meta.set_format_version(1);
     table_meta.set_storage_mode(storageMode);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "card", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "mcc", ::openmldb::type::kString);
@@ -932,7 +921,7 @@ TEST_P(TableTest, TraverseIteratorCount) {
         dim->set_key(row[1]);
         std::string value;
         ASSERT_EQ(0, codec.EncodeRow(row, &value));
-        table->Put(0, value, request.dimensions());
+        ASSERT_TRUE(table->Put(0, value, request.dimensions()).ok());
     }
     TableIterator* it = table->NewTraverseIterator(0);
     it->SeekToFirst();
@@ -1034,7 +1023,6 @@ TEST_P(TableTest, AbsAndLatSetGet) {
     table_meta.set_seg_cnt(8);
     table_meta.set_mode(::openmldb::api::TableMode::kTableLeader);
     table_meta.set_key_entry_max_height(8);
-    table_meta.set_format_version(1);
     table_meta.set_storage_mode(storageMode);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "card", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "mcc", ::openmldb::type::kString);
@@ -1060,7 +1048,7 @@ TEST_P(TableTest, AbsAndLatSetGet) {
         dim->set_key("mcc");
         std::string value;
         ASSERT_EQ(0, codec.EncodeRow(row, &value));
-        table->Put(0, value, request.dimensions());
+        ASSERT_TRUE(table->Put(0, value, request.dimensions()).ok());
     }
     // test get and set ttl
     ASSERT_EQ(10, (int64_t)table->GetIndex(0)->GetTTL()->abs_ttl / (10 * 6000));
@@ -1135,7 +1123,6 @@ TEST_P(TableTest, AbsOrLatSetGet) {
     table_meta.set_seg_cnt(8);
     table_meta.set_mode(::openmldb::api::TableMode::kTableLeader);
     table_meta.set_key_entry_max_height(8);
-    table_meta.set_format_version(1);
     table_meta.set_storage_mode(storageMode);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "card", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "mcc", ::openmldb::type::kString);
@@ -1162,7 +1149,7 @@ TEST_P(TableTest, AbsOrLatSetGet) {
         dim->set_key("mcc");
         std::string value;
         ASSERT_EQ(0, codec.EncodeRow(row, &value));
-        table->Put(0, value, request.dimensions());
+        ASSERT_TRUE(table->Put(0, value, request.dimensions()).ok());
     }
     // test get and set ttl
     ASSERT_EQ(10, (int64_t)table->GetIndex(0)->GetTTL()->abs_ttl / (10 * 6000));
@@ -1238,7 +1225,6 @@ TEST_P(TableTest, GcAbsOrLat) {
     table_meta.set_seg_cnt(8);
     table_meta.set_mode(::openmldb::api::TableMode::kTableLeader);
     table_meta.set_key_entry_max_height(8);
-    table_meta.set_format_version(1);
     table_meta.set_storage_mode(storageMode);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "idx0", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "value", ::openmldb::type::kString);
@@ -1246,7 +1232,7 @@ TEST_P(TableTest, GcAbsOrLat) {
 
     int32_t offset = FLAGS_gc_safe_offset;
     FLAGS_gc_safe_offset = 0;
-    Table* table = CreateTable(table_meta, table_path);
+    std::unique_ptr<Table> table(CreateTable(table_meta, table_path));
     table->Init();
     uint64_t now = ::baidu::common::timer::get_micros() / 1000;
     table->Put("test1", now - 3 * (60 * 1000) - 1000, "value1", 6);
@@ -1256,7 +1242,7 @@ TEST_P(TableTest, GcAbsOrLat) {
     table->Put("test2", now - 4 * (60 * 1000) - 1000, "value4", 6);
     table->Put("test2", now - 2 * (60 * 1000) - 1000, "value5", 6);
     table->Put("test2", now - 1 * (60 * 1000) - 1000, "value6", 6);
-    ASSERT_EQ(7, (int64_t)table->GetRecordCnt());
+    ASSERT_EQ(7, (int64_t)table->GetRecordIdxCnt());
     // some functions in disk table need to be implemented.
     // refer to issue #1238
     if (storageMode == ::openmldb::common::StorageMode::kMemory) {
@@ -1364,8 +1350,6 @@ TEST_P(TableTest, GcAbsOrLat) {
         }
     }
     FLAGS_gc_safe_offset = offset;
-
-    delete table;
 }
 
 TEST_P(TableTest, GcAbsAndLat) {
@@ -1389,7 +1373,6 @@ TEST_P(TableTest, GcAbsAndLat) {
     table_meta.set_seg_cnt(8);
     table_meta.set_mode(::openmldb::api::TableMode::kTableLeader);
     table_meta.set_key_entry_max_height(8);
-    table_meta.set_format_version(1);
     table_meta.set_storage_mode(storageMode);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "idx0", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "value", ::openmldb::type::kString);
@@ -1549,7 +1532,6 @@ TEST_P(TableTest, TraverseIteratorCountWithLimit) {
     table_meta.set_seg_cnt(8);
     table_meta.set_mode(::openmldb::api::TableMode::kTableLeader);
     table_meta.set_key_entry_max_height(8);
-    table_meta.set_format_version(1);
     table_meta.set_storage_mode(storageMode);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "card", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "mcc", ::openmldb::type::kString);
@@ -1580,7 +1562,7 @@ TEST_P(TableTest, TraverseIteratorCountWithLimit) {
         dim->set_key(row[1]);
         std::string value;
         ASSERT_EQ(0, codec.EncodeRow(row, &value));
-        table->Put(0, value, request.dimensions());
+        ASSERT_TRUE(table->Put(0, value, request.dimensions()).ok());
     }
 
     TableIterator* it = table->NewTraverseIterator(0);
@@ -1658,7 +1640,6 @@ TEST_P(TableTest, TSColIDLength) {
     table_meta.set_seg_cnt(8);
     table_meta.set_mode(::openmldb::api::TableMode::kTableLeader);
     table_meta.set_key_entry_max_height(8);
-    table_meta.set_format_version(1);
     table_meta.set_storage_mode(storageMode);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "card", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "mcc", ::openmldb::type::kString);
@@ -1688,7 +1669,7 @@ TEST_P(TableTest, TSColIDLength) {
         dim1->set_key(row[0]);
         std::string value;
         ASSERT_EQ(0, codec.EncodeRow(row, &value));
-        table->Put(0, value, request.dimensions());
+        ASSERT_TRUE(table->Put(0, value, request.dimensions()).ok());
     }
 
     TableIterator* it = table->NewTraverseIterator(0);
@@ -1719,7 +1700,6 @@ TEST_P(TableTest, MultiDimensionPutTS) {
     table_meta.set_mode(::openmldb::api::TableMode::kTableLeader);
     table_meta.set_key_entry_max_height(8);
     table_meta.set_storage_mode(storageMode);
-    table_meta.set_format_version(1);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "card", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "mcc", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "price", ::openmldb::type::kBigInt);
@@ -1747,7 +1727,7 @@ TEST_P(TableTest, MultiDimensionPutTS) {
         dim->set_key(row[1]);
         std::string value;
         ASSERT_EQ(0, codec.EncodeRow(row, &value));
-        table->Put(0, value, request.dimensions());
+        ASSERT_TRUE(table->Put(0, value, request.dimensions()).ok());
     }
     TableIterator* it = table->NewTraverseIterator(0);
     it->SeekToFirst();
@@ -1778,7 +1758,6 @@ TEST_P(TableTest, MultiDimensionPutTS1) {
     table_meta.set_mode(::openmldb::api::TableMode::kTableLeader);
     table_meta.set_key_entry_max_height(8);
     table_meta.set_storage_mode(storageMode);
-    table_meta.set_format_version(1);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "card", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "mcc", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "ts1", ::openmldb::type::kBigInt);
@@ -1802,7 +1781,7 @@ TEST_P(TableTest, MultiDimensionPutTS1) {
         dim->set_key(row[1]);
         std::string value;
         ASSERT_EQ(0, codec.EncodeRow(row, &value));
-        table->Put(0, value, request.dimensions());
+        ASSERT_TRUE(table->Put(0, value, request.dimensions()).ok());
     }
     TableIterator* it = table->NewTraverseIterator(0);
     it->SeekToFirst();
@@ -1844,7 +1823,7 @@ TEST_P(TableTest, MultiDimissionPutTS2) {
     ::openmldb::codec::SDKCodec sdk_codec(meta);
     std::string result;
     sdk_codec.EncodeRow({"d0", "d1", "d2"}, &result);
-    bool ok = table->Put(100, result, dimensions);
+    bool ok = table->Put(100, result, dimensions).ok();
     ASSERT_TRUE(ok);
 
     TableIterator* it = table->NewTraverseIterator(0);
@@ -1872,7 +1851,6 @@ TEST_P(TableTest, AbsAndLat) {
     table_meta.set_mode(::openmldb::api::TableMode::kTableLeader);
     table_meta.set_key_entry_max_height(8);
     table_meta.set_storage_mode(storageMode);
-    table_meta.set_format_version(1);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "test", ::openmldb::type::kString);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "ts1", ::openmldb::type::kBigInt);
     SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "ts2", ::openmldb::type::kBigInt);
@@ -1907,7 +1885,7 @@ TEST_P(TableTest, AbsAndLat) {
         }
         std::string value;
         ASSERT_EQ(0, codec.EncodeRow(row, &value));
-        table->Put(0, value, request.dimensions());
+        ASSERT_TRUE(table->Put(0, value, request.dimensions()).ok());
     }
 
     for (int i = 0; i <= 5; i++) {
@@ -1931,7 +1909,40 @@ TEST_P(TableTest, AbsAndLat) {
     delete table;
 }
 
-INSTANTIATE_TEST_CASE_P(TestMemAndHDD, TableTest,
+TEST_P(TableTest, NegativeTs) {
+    ::openmldb::common::StorageMode storageMode = GetParam();
+    ::openmldb::api::TableMeta table_meta;
+    table_meta.set_name("table1");
+    std::string table_path = "";
+    int id = 1;
+    if (storageMode == ::openmldb::common::kHDD) {
+        id = ++counter;
+        table_path = GetDBPath(FLAGS_hdd_root_path, id, 1);
+    }
+    table_meta.set_tid(id);
+    table_meta.set_pid(1);
+    table_meta.set_seg_cnt(8);
+    table_meta.set_mode(::openmldb::api::TableMode::kTableLeader);
+    table_meta.set_key_entry_max_height(8);
+    table_meta.set_storage_mode(storageMode);
+    SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "card", ::openmldb::type::kString);
+    SchemaCodec::SetColumnDesc(table_meta.add_column_desc(), "ts1", ::openmldb::type::kBigInt);
+    SchemaCodec::SetIndex(table_meta.add_column_key(), "card", "card", "ts1", ::openmldb::type::kAbsoluteTime, 0, 0);
+    Table* table = CreateTable(table_meta, table_path);
+    table->Init();
+    codec::SDKCodec codec(table_meta);
+    std::vector<std::string> row = {"card1", "-1224"};
+    ::openmldb::api::PutRequest request;
+    ::openmldb::api::Dimension* dim = request.add_dimensions();
+    dim->set_idx(0);
+    dim->set_key(row[0]);
+    std::string value;
+    ASSERT_EQ(0, codec.EncodeRow(row, &value));
+    auto st = table->Put(0, value, request.dimensions());
+    ASSERT_TRUE(absl::IsInvalidArgument(st)) << st.ToString();
+}
+
+INSTANTIATE_TEST_SUITE_P(TestMemAndHDD, TableTest,
                         ::testing::Values(::openmldb::common::kMemory, ::openmldb::common::kHDD));
 
 }  // namespace storage

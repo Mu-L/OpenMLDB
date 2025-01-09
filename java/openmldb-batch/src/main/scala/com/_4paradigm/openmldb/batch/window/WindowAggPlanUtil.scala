@@ -20,7 +20,7 @@ import com._4paradigm.hybridse.node.FrameType
 import com._4paradigm.hybridse.sdk.{HybridSeException, JitManager, SerializableByteBuffer}
 import com._4paradigm.hybridse.vm.PhysicalWindowAggrerationNode
 import com._4paradigm.hybridse.vm.Window.WindowFrameType
-import com._4paradigm.openmldb.batch.utils.{HybridseUtil, SparkColumnUtil, SparkUtil}
+import com._4paradigm.openmldb.batch.utils.{ExternalUdfUtil, HybridseUtil, SparkColumnUtil, SparkUtil}
 import com._4paradigm.openmldb.batch.{OpenmldbBatchConfig, PlanContext, SparkInstance}
 import com._4paradigm.openmldb.sdk.impl.SqlClusterExecutor
 import org.apache.hadoop.fs.FileSystem
@@ -144,7 +144,10 @@ object WindowAggPlanUtil {
                              needAppendInput: Boolean,
                              limitCnt: Int,
                              keepIndexColumn: Boolean,
-                             isUnsafeRowOpt: Boolean)
+                             isUnsafeRowOpt: Boolean,
+                             externalFunMap: Map[String, com._4paradigm.openmldb.proto.Common.ExternalFun],
+                             isYarnMode: Boolean,
+                             taskmanagerExternalFunctionDir: String)
 
 
   /** Get the data from context and physical node and create the WindowAggConfig object.
@@ -169,11 +172,17 @@ object WindowAggPlanUtil {
 
     // process order key
     val orders = windowOp.sort().orders()
-    val ordersExprListNode = orders.getOrder_expressions_()
-    if (ordersExprListNode.GetChildNum() > 1) {
-      throw new HybridSeException("Multiple window order not supported")
+    if (orders != null) {
+      val ordersExprListNode = orders.getOrder_expressions_()
+      if (ordersExprListNode.GetChildNum() > 1) {
+        throw new HybridSeException("Multiple window order not supported")
+      }
     }
-    val orderIdx = SparkColumnUtil.resolveOrderColumnIndex(orders.GetOrderExpression(0), node.GetProducer(0))
+    val orderIdx = if (orders == null) {
+      -1
+    } else {
+      SparkColumnUtil.resolveOrderColumnIndex(orders.GetOrderExpression(0), node.GetProducer(0))
+    }
 
     // process group-by keys
     val groups = windowOp.partition().keys()
@@ -206,6 +215,18 @@ object WindowAggPlanUtil {
       WindowFrameType.kFrameRowsRange
     }
 
+    val config = ctx.getConf
+    val openmldbSession = ctx.getOpenmldbSession
+    var externalFunMap = Map[String, com._4paradigm.openmldb.proto.Common.ExternalFun]()
+    if (config.openmldbZkCluster.nonEmpty && config.openmldbZkRootPath.nonEmpty
+      && openmldbSession != null && openmldbSession.openmldbCatalogService != null) {
+      externalFunMap = openmldbSession.openmldbCatalogService.getExternalFunctionsMap()
+    }
+    // TODO(tobe): openmldbSession may be null
+    //val isYarnMode = openmldbSession.isYarnMode()
+    val isYarnMode = ctx.getSparkSession.conf.get("spark.master").equalsIgnoreCase("yarn")
+    val taskmanagerExternalFunctionDir = config.taskmanagerExternalFunctionDir
+
     WindowAggConfig(
       windowName = windowName,
       windowFrameTypeName = windowFrameType.toString,
@@ -228,10 +249,12 @@ object WindowAggPlanUtil {
       needAppendInput = node.need_append_input(),
       limitCnt = node.GetLimitCntValue(),
       keepIndexColumn = keepIndexColumn,
-      isUnsafeRowOpt = ctx.getConf.enableUnsafeRowOptimization
+      isUnsafeRowOpt = ctx.getConf.enableUnsafeRowOptimization,
+      externalFunMap = externalFunMap,
+      isYarnMode = isYarnMode,
+      taskmanagerExternalFunctionDir = taskmanagerExternalFunctionDir
     )
   }
-
 
   def createComputer(partitionIndex: Int,
                      hadoopConf: SerializableConfiguration,
@@ -241,8 +264,12 @@ object WindowAggPlanUtil {
     val tag = config.moduleTag
     val buffer = config.moduleNoneBroadcast.getBuffer
     SqlClusterExecutor.initJavaSdkLibrary(sqlConfig.openmldbJsdkLibraryPath)
-    JitManager.initJitModule(tag, buffer, config.isUnsafeRowOpt)
 
+    // Load external udf if exists
+    ExternalUdfUtil.executorRegisterExternalUdf(config.externalFunMap, config.taskmanagerExternalFunctionDir,
+      config.isYarnMode)
+
+    JitManager.initJitModule(tag, buffer, config.isUnsafeRowOpt)
     val jit = JitManager.getJit(tag)
 
     // create stateful computer

@@ -15,13 +15,14 @@
  */
 
 #include "codegen/fn_let_ir_builder.h"
+
 #include "codegen/aggregate_ir_builder.h"
+#include "codegen/buf_ir_builder.h"
 #include "codegen/context.h"
 #include "codegen/expr_ir_builder.h"
 #include "codegen/ir_base_builder.h"
 #include "codegen/variable_ir_builder.h"
 #include "glog/logging.h"
-#include "vm/transform.h"
 
 using ::hybridse::common::kCodegenError;
 
@@ -93,11 +94,11 @@ Status RowFnLetIRBuilder::Build(
     ::llvm::BasicBlock* block = ctx_->GetCurrentBlock();
     VariableIRBuilder variable_ir_builder(block, sv);
 
-    if (primary_frame != nullptr && !primary_frame->IsPureHistoryFrame()) {
+    if (primary_frame != nullptr && !primary_frame->IsPureHistoryFrame() && !primary_frame->exclude_current_row_) {
         NativeValue window;
-        variable_ir_builder.LoadWindow("", &window, status);
-        variable_ir_builder.StoreWindow(primary_frame->GetExprString(),
-                                        window.GetRaw(), status);
+        CHECK_TRUE(variable_ir_builder.LoadWindow("", &window, status), kCodegenError);
+        CHECK_TRUE(variable_ir_builder.StoreWindow(primary_frame->GetExprString(), window.GetRaw(), status),
+                   kCodegenError);
     }
 
     ExprIRBuilder expr_ir_builder(ctx_);
@@ -171,7 +172,8 @@ base::Status RowFnLetIRBuilder::EncodeBuf(
     VariableIRBuilder& variable_ir_builder,  // NOLINT (runtime/references)
     ::llvm::BasicBlock* block, const std::string& output_ptr_name) {
     base::Status status;
-    BufNativeEncoderIRBuilder encoder(values, &schema, block);
+    BufNativeEncoderIRBuilder encoder(ctx_, values, &schema);
+    CHECK_STATUS(encoder.Init());
     NativeValue row_ptr;
     variable_ir_builder.LoadValue(output_ptr_name, &row_ptr, status);
     CHECK_STATUS(status)
@@ -234,8 +236,9 @@ Status RowFnLetIRBuilder::BuildProject(
                kCodegenError, "Fail to get output type at ", index, ", expect ",
                expr->GetOutputType()->GetName());
 
-    ::hybridse::type::Type ctype;
-    CHECK_TRUE(DataType2SchemaType(*data_type, &ctype), kCodegenError);
+    ::hybridse::type::ColumnSchema schema;
+    auto s = Type2ColumnSchema(data_type, &schema);
+    CHECK_TRUE(s.ok(), kCodegenError, s.ToString());
 
     outputs->insert(std::make_pair(index, expr_out_val));
     return Status::OK();
